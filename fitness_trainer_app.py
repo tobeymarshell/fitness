@@ -1,7 +1,12 @@
+# Installation (run in terminal):
+# pip install streamlit pandas scikit-learn transformers torch
+
 import streamlit as st
 import random
 from datetime import datetime
 import pandas as pd
+from sklearn.neighbors import NearestNeighbors
+from transformers import pipeline
 
 # --- In-memory storage ---
 if 'users' not in st.session_state:
@@ -9,33 +14,62 @@ if 'users' not in st.session_state:
 if 'progress' not in st.session_state:
     st.session_state['progress'] = {}
 
-# --- Helper functions ---
-def generate_workout_plan(goal, experience, equipment):
-    # Simple AI logic for demo
-    plans = {
-        'weight loss': ['Jumping Jacks', 'Burpees', 'Mountain Climbers', 'Running', 'Cycling'],
-        'muscle gain': ['Push-ups', 'Pull-ups', 'Squats', 'Deadlifts', 'Bench Press'],
-        'endurance': ['Plank', 'Running', 'Swimming', 'Cycling', 'Rowing']
-    }
-    plan = plans.get(goal, [])
-    if equipment == 'none':
-        plan = [ex for ex in plan if ex in ['Jumping Jacks', 'Burpees', 'Mountain Climbers', 'Push-ups', 'Plank', 'Running']]
+# --- Mock dataset for ML recommender ---
+# Each row: [age, gender (0=male, 1=female, 2=other), goal (0=weight loss, 1=muscle gain, 2=endurance), experience (0,1,2), equipment (0,1,2)]
+# and a recommended plan
+mock_profiles = [
+    [25, 1, 0, 0, 0],  # young female, weight loss, beginner, no equipment
+    [30, 0, 1, 1, 1],  # male, muscle gain, intermediate, basic equipment
+    [40, 0, 2, 2, 2],  # male, endurance, advanced, full equipment
+    [22, 2, 0, 0, 0],  # other, weight loss, beginner, no equipment
+    [35, 1, 1, 2, 2],  # female, muscle gain, advanced, full equipment
+]
+mock_plans = [
+    ['Jumping Jacks', 'Burpees', 'Mountain Climbers', 'Running', 'Plank'],
+    ['Push-ups', 'Pull-ups', 'Squats', 'Deadlifts', 'Bench Press'],
+    ['Plank', 'Running', 'Swimming', 'Cycling', 'Rowing'],
+    ['Jumping Jacks', 'Burpees', 'Running', 'Plank', 'Push-ups'],
+    ['Squats', 'Deadlifts', 'Bench Press', 'Pull-ups', 'Push-ups'],
+]
+
+# Fit a simple NearestNeighbors model
+import numpy as np
+nn_model = NearestNeighbors(n_neighbors=1)
+nn_model.fit(np.array(mock_profiles))
+
+def encode_profile(user):
+    gender_map = {'male': 0, 'female': 1, 'other': 2}
+    goal_map = {'weight loss': 0, 'muscle gain': 1, 'endurance': 2}
+    exp_map = {'beginner': 0, 'intermediate': 1, 'advanced': 2}
+    equip_map = {'none': 0, 'basic': 1, 'full': 2}
+    return [
+        int(user['age']),
+        gender_map[user['gender']],
+        goal_map[user['goal']],
+        exp_map[user['experience']],
+        equip_map[user['equipment']]
+    ]
+
+def ml_generate_workout_plan(user):
+    profile = np.array(encode_profile(user)).reshape(1, -1)
+    idx = nn_model.kneighbors(profile, return_distance=False)[0][0]
+    plan = mock_plans[idx]
     random.shuffle(plan)
     return plan[:5]
 
-def get_exercise_advice(exercise):
-    advice_dict = {
-        'Push-ups': 'Keep your body straight, lower until elbows are 90 degrees.',
-        'Squats': 'Keep your back straight, knees behind toes.',
-        'Plank': 'Keep your body in a straight line, don\'t let hips sag.',
-        'Burpees': 'Explode up, land softly, keep core tight.',
-        'Running': 'Maintain steady pace, land mid-foot.',
-        'Jumping Jacks': 'Land softly, keep arms straight.',
-        'Deadlifts': 'Keep back straight, lift with legs.',
-        'Bench Press': 'Lower bar to chest, keep wrists straight.'
-    }
-    return advice_dict.get(exercise, 'No advice available for this exercise.')
+# --- HuggingFace pipeline for advice ---
+@st.cache_resource(show_spinner=False)
+def get_advice_pipeline():
+    return pipeline('text-generation', model='distilgpt2')
 
+advice_pipe = get_advice_pipeline()
+
+def ai_exercise_advice(exercise, user):
+    prompt = f"Give a personalized tip for doing {exercise} for a {user['experience']} {user['gender']} whose goal is {user['goal']}."
+    result = advice_pipe(prompt, max_length=40, num_return_sequences=1)
+    return result[0]['generated_text'].replace(prompt, '').strip()
+
+# --- Logging and progress functions ---
 def log_workout(username, exercise, reps_or_time):
     entry = {
         'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -75,9 +109,9 @@ if username:
     else:
         st.success(f'Welcome back, {username}!')
         user = st.session_state['users'][username]
-        # --- Workout Plan ---
-        st.header('Your Workout Plan')
-        plan = generate_workout_plan(user['goal'], user['experience'], user['equipment'])
+        # --- ML-based Workout Plan ---
+        st.header('Your AI-Generated Workout Plan')
+        plan = ml_generate_workout_plan(user)
         st.write('Today\'s Plan:')
         for i, exercise in enumerate(plan, 1):
             st.write(f"{i}. {exercise}")
@@ -89,9 +123,9 @@ if username:
             log_workout(username, exercise, reps_or_time)
             st.success(f'Logged {exercise} - {reps_or_time}')
         # --- AI-Powered Advice ---
-        st.header('Exercise Advice')
+        st.header('AI Exercise Advice')
         if exercise:
-            st.info(get_exercise_advice(exercise))
+            st.info(ai_exercise_advice(exercise, user))
         # --- Progress Dashboard ---
         st.header('Your Progress')
         if st.session_state['progress'][username]:
